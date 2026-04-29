@@ -56,6 +56,7 @@ final class LocationManager: NSObject, ObservableObject {
         geocoder.reverseGeocodeLocation(location) { [weak self] placemarks, error in
             guard let self = self else { return }
             if let error = error {
+                if (error as? CLError)?.code == .geocodeCanceled { return }
                 DispatchQueue.main.async {
                     self.address = "Geocoding error: \(error.localizedDescription)"
                 }
