@@ -6,7 +6,8 @@ A real-time boat tracking system consisting of three components:
 
 1. **iOS App** (Swift/SwiftUI) — Captures GPS coordinates on the boat and transmits them to the backend
 2. **Backend API** (Java/Spring Boot) — Receives, stores, and serves location data
-3. **Web Map** (HTML/JS + Leaflet) — Displays boat positions and routes on an interactive map
+3. **Web Map** (HTML/JS + Google Maps) — Displays boat positions and routes on an interactive map
+4. **KML Export** — Generate KML/KMZ files for 3D route replay in Google Earth
 
 ```
 ┌─────────────────┐        HTTPS/JSON         ┌─────────────────────┐
@@ -26,9 +27,10 @@ A real-time boat tracking system consisting of three components:
                                                │                     │
                                                │   Web Map Frontend  │
                                                │                     │
-                                               │  • Leaflet map      │
+                                               │  • Google Maps      │
                                                │  • Real-time pins   │
                                                │  • Route trails     │
+                                               │  • KML/KMZ export   │
                                                └─────────────────────┘
 ```
 
@@ -46,8 +48,9 @@ A real-time boat tracking system consisting of three components:
 | **Backend** | Spring WebSocket | 3.2+ | Real-time push to web clients |
 | **Database** | PostgreSQL | 16+ | Relational database |
 | **Database** | PostGIS | 3.4+ | Geospatial extensions |
-| **Frontend** | Leaflet.js | 1.9+ | Interactive map library |
+| **Frontend** | Google Maps JS API | 3.x | Interactive map with satellite/terrain views |
 | **Frontend** | HTML/CSS/JS | — | Web map UI |
+| **Backend** | JAK XML (JAXB) | — | KML/KMZ generation for Google Earth export |
 | **Infra** | Docker / Docker Compose | — | Local development & deployment |
 | **Infra** | Flyway | 10+ | Database migrations |
 
@@ -112,7 +115,8 @@ boat-tracker-api/
 │   │   └── LocationRepository.java
 │   ├── service/
 │   │   ├── LocationService.java
-│   │   └── BoatService.java
+│   │   ├── BoatService.java
+│   │   └── KmlExportService.java
 │   └── websocket/
 │       └── LocationWebSocketHandler.java
 ├── src/main/resources/
@@ -126,17 +130,88 @@ boat-tracker-api/
 
 ---
 
-### 3.3 Web Map Frontend
+### 3.3 Web Map Frontend (Google Maps)
 
 **Responsibilities:**
-- Render an interactive map (Leaflet + OpenStreetMap tiles)
-- Show boat markers at their latest known position
-- Draw route trails from location history
-- Auto-refresh via WebSocket or polling
+- Render an interactive map using **Google Maps JavaScript API**
+- Show boat markers (custom sailboat icon, rotated by heading) at their latest known position
+- Draw route polylines from location history, color-coded by speed
+- Auto-refresh via WebSocket for real-time marker updates
+- Support Satellite, Terrain, Hybrid, and Roadmap views
 
 **Pages:**
-- **Dashboard** — Map with all active boats
-- **Boat Detail** — Single boat view with full route trail and data table
+- **Dashboard** — Map with all active boats, zoom-to-fit
+- **Boat Detail** — Single boat view with full route trail, data table, and KML export button
+
+**Google Maps Features Used:**
+- `google.maps.Map` — Base map with satellite/terrain
+- `google.maps.Marker` / `google.maps.marker.AdvancedMarkerElement` — Custom sailboat icon
+- `google.maps.Polyline` — Route trail drawing
+- `google.maps.InfoWindow` — Popup with speed, heading, timestamp on marker click
+- `google.maps.LatLngBounds` — Auto-fit map to show all boats
+
+**API Key Requirement:**
+- A Google Maps API key is required (enable "Maps JavaScript API" at [Google Cloud Console](https://console.cloud.google.com/apis/credentials))
+- The key is loaded via `<script src="https://maps.googleapis.com/maps/api/js?key=YOUR_KEY">`
+
+---
+
+### 3.4 KML/KMZ Export (Google Earth)
+
+**Responsibilities:**
+- Generate KML files from boat route history for 3D replay in Google Earth
+- Include placemarks with boat name, timestamps, speed, and heading
+- Draw `<LineString>` route path with altitude data
+- Support time-based animation via `<TimeStamp>` elements
+- Optionally compress as KMZ (zipped KML + icons)
+
+**KML Structure:**
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+  <Document>
+    <name>Sea Explorer — 2025-01-15</name>
+    <description>Sailboat route trail</description>
+    
+    <Style id="boatTrail">
+      <LineStyle>
+        <color>ff0000ff</color>
+        <width>3</width>
+      </LineStyle>
+    </Style>
+    
+    <!-- Route trail -->
+    <Placemark>
+      <name>Route</name>
+      <styleUrl>#boatTrail</styleUrl>
+      <LineString>
+        <altitudeMode>clampToSeaFloor</altitudeMode>
+        <coordinates>
+          -46.633308,-23.550520,0.5
+          -46.634000,-23.551000,0.3
+          ...
+        </coordinates>
+      </LineString>
+    </Placemark>
+    
+    <!-- Individual points with timestamps -->
+    <Placemark>
+      <name>14:30:00 — 12.3 km/h</name>
+      <TimeStamp><when>2025-01-15T14:30:00Z</when></TimeStamp>
+      <Point>
+        <coordinates>-46.633308,-23.550520,0.5</coordinates>
+      </Point>
+    </Placemark>
+    
+  </Document>
+</kml>
+```
+
+**Usage:**
+1. User clicks "Export KML" on the web dashboard for a specific boat/trip
+2. Backend generates the KML file from stored location data
+3. Browser downloads the `.kml` file
+4. User opens it in Google Earth for 3D replay with time slider
 
 ---
 
@@ -354,7 +429,7 @@ CREATE INDEX idx_locations_geom ON locations USING GIST(geom);
 
 | Endpoint | Description |
 |----------|-------------|
-| `ws://<server>/ws/locations` | Real-time location updates pushed to map clients |
+| `ws://<server>/ws/locations` | Real-time location updates pushed to Google Maps clients |
 
 **Message format (server → client):**
 ```json
@@ -369,6 +444,28 @@ CREATE INDEX idx_locations_geom ON locations USING GIST(geom);
   "device_timestamp": "2025-01-15T14:30:00Z"
 }
 ```
+
+The web frontend receives this via WebSocket and updates the `google.maps.Marker` position and `google.maps.Polyline` path in real time.
+
+### 5.4 KML Export
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/boats/{id}/locations/kml?from=&to=` | Download route as KML file for Google Earth |
+
+**Query Parameters:**
+- `from` (optional) — Start datetime (ISO 8601). Defaults to 24 hours ago.
+- `to` (optional) — End datetime (ISO 8601). Defaults to now.
+
+**Response:**
+- `Content-Type: application/vnd.google-earth.kml+xml`
+- `Content-Disposition: attachment; filename="sea-explorer-2025-01-15.kml"`
+
+The backend queries the `locations` table for the given boat and time range, then generates a KML document with:
+- `<LineString>` for the full route trail
+- `<Placemark>` with `<TimeStamp>` for each recorded point (enables Google Earth time slider)
+- `<Style>` for route color and width
+- `altitudeMode` set to `clampToSeaFloor` for maritime accuracy
 
 ---
 
@@ -456,6 +553,7 @@ CREATE INDEX idx_locations_geom ON locations USING GIST(geom);
 | Rate Limiting | Max 1 request/second per boat to prevent abuse |
 | CORS | Restrict to frontend domain |
 | Database | Parameterized queries via JPA (no SQL injection) |
+| Google Maps API Key | Restrict key by HTTP referrer and API (Maps JS only) |
 
 ---
 
@@ -465,6 +563,8 @@ CREATE INDEX idx_locations_geom ON locations USING GIST(geom);
 - **Speed alerts** — Notify when a boat exceeds a speed threshold
 - **Multi-user** — Authentication and authorization for fleet management
 - **Trip recording** — Start/stop trip tracking with trip summaries
-- **Weather overlay** — Show wind/wave data on the map
+- **Weather overlay** — Show wind/wave data on the map (Google Maps overlay layers)
 - **AIS integration** — Overlay Automatic Identification System data
 - **Push notifications** — Alert boat owners of events via APNs
+- **KMZ with custom icons** — Bundle sailboat icons inside KMZ archives for richer Google Earth display
+- **Google Maps heatmap** — Speed/density heatmap layer using `google.maps.visualization`
